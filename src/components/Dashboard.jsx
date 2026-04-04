@@ -13,6 +13,7 @@ import {
   Upload,
   Loader2,
   Trash2,
+  Share2,
 } from 'lucide-react';
 import { supabaseClient } from '../lib/supabase';
 import {
@@ -25,6 +26,7 @@ import { generateLegalReport } from '@/utils/pdfGenerator';
 import { extractTextFromFile } from '@/utils/fileParser';
 import { useLanguage } from '@/context/LanguageContext';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
+import AnalysisCards from '@/components/AnalysisCards';
 
 const FILE_ERR_KEYS = {
   INVALID: 'file.invalid',
@@ -44,23 +46,6 @@ function translateFileError(message, t) {
   const key = FILE_ERR_KEYS[/** @type {keyof typeof FILE_ERR_KEYS} */ (code)];
   return key ? t(key) : message;
 }
-
-const listVariants = {
-  hidden: { opacity: 0 },
-  visible: {
-    opacity: 1,
-    transition: { staggerChildren: 0.1, delayChildren: 0.08 },
-  },
-};
-
-const cardVariants = {
-  hidden: { opacity: 0, y: 12 },
-  visible: {
-    opacity: 1,
-    y: 0,
-    transition: { type: 'spring', stiffness: 520, damping: 36, mass: 0.65 },
-  },
-};
 
 const overlayVariants = {
   initial: { opacity: 0 },
@@ -99,63 +84,6 @@ function hasExportableAnalysis(a) {
   return hasSummary || hasBody;
 }
 
-function AnalysisCards({ analysis, t }) {
-  const { summary, pros, cons, risks } = analysis;
-  const summaryDisplay = summary?.trim() ? summary : t('analysis.noSummary');
-
-  return (
-    <Motion.div className="mt-4 space-y-4" variants={listVariants} initial="hidden" animate="visible">
-      <Motion.div
-        variants={cardVariants}
-        className="rounded-2xl border border-slate-200/80 border-l-[5px] border-l-indigo-600 bg-gradient-to-br from-slate-50 via-white to-indigo-50/50 p-5 shadow-md shadow-slate-200/50 ring-1 ring-slate-200/60"
-      >
-        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-indigo-600">{t('card.summaryTitle')}</p>
-        <h2 className="mt-2 text-lg font-bold leading-snug tracking-tight text-slate-800 sm:text-xl">{summaryDisplay}</h2>
-      </Motion.div>
-
-      <Motion.div
-        variants={cardVariants}
-        className="rounded-2xl border-2 border-emerald-600/40 bg-emerald-50/95 p-5 shadow-md shadow-emerald-900/5"
-      >
-        <p className="text-sm font-bold tracking-tight text-emerald-900">{t('card.positive')}</p>
-        {pros.length === 0 ? (
-          <p className="mt-2 text-sm text-emerald-800/70">{t('card.dash')}</p>
-        ) : (
-          <ul className="mt-3 list-disc space-y-1.5 pl-5 text-sm leading-relaxed text-emerald-950">
-            {pros.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ul>
-        )}
-      </Motion.div>
-
-      <Motion.div
-        variants={cardVariants}
-        className="rounded-2xl border-2 border-amber-500/45 bg-amber-50/95 p-5 shadow-md shadow-amber-900/5"
-      >
-        <p className="text-sm font-bold tracking-tight text-amber-950">{t('card.negative')}</p>
-        {cons.length === 0 ? (
-          <p className="mt-2 text-sm text-amber-900/70">{t('card.dash')}</p>
-        ) : (
-          <ul className="mt-3 list-disc space-y-1.5 pl-5 text-sm leading-relaxed text-amber-950">
-            {cons.map((item, i) => (
-              <li key={i}>{item}</li>
-            ))}
-          </ul>
-        )}
-      </Motion.div>
-
-      <Motion.div
-        variants={cardVariants}
-        className="rounded-2xl border-2 border-red-600/50 bg-red-50/95 p-5 shadow-lg shadow-red-900/10 ring-1 ring-red-200/40"
-      >
-        <p className="text-sm font-bold tracking-tight text-red-950">{t('card.risks')}</p>
-        <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-red-950">{risks?.trim() ? risks : t('card.dash')}</p>
-      </Motion.div>
-    </Motion.div>
-  );
-}
-
 export default function Dashboard({ session }) {
   const { t } = useLanguage();
   const [docText, setDocText] = useState('');
@@ -168,6 +96,8 @@ export default function Dashboard({ session }) {
   const [activeRecordId, setActiveRecordId] = useState(null);
   const [pdfExporting, setPdfExporting] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState(false);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareCopied, setShareCopied] = useState(false);
   const [fileParsing, setFileParsing] = useState(false);
   const [uploadError, setUploadError] = useState(null);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -329,6 +259,70 @@ export default function Dashboard({ session }) {
     }
   }
 
+  async function handleShareAnalysis() {
+    if (
+      !supabaseClient ||
+      !userId ||
+      !activeRecordId ||
+      !displayAnalysis ||
+      !hasExportableAnalysis(displayAnalysis) ||
+      shareBusy
+    ) {
+      return;
+    }
+    setShareBusy(true);
+    try {
+      const payload = {
+        summary: displayAnalysis.summary ?? '',
+        pros: displayAnalysis.pros ?? [],
+        cons: displayAnalysis.cons ?? [],
+        risks: displayAnalysis.risks ?? '',
+      };
+      const resultJson = JSON.stringify(payload);
+      const { data, error } = await supabaseClient
+        .from('analyses')
+        .upsert(
+          { analyzed_doc_id: activeRecordId, result: resultJson },
+          { onConflict: 'analyzed_doc_id' }
+        )
+        .select('id')
+        .single();
+
+      if (error) {
+        const msg = error.message || '';
+        const tableMissing =
+          /analyses/i.test(msg) &&
+          (/schema cache|could not find|does not exist|relation/i.test(msg) ||
+            /PGRST205/i.test(msg));
+        window.alert(
+          tableMissing
+            ? `${t('share.saveFailed')}\n\n${t('share.tableMissingHint')}`
+            : `${t('share.saveFailed')} ${msg}`
+        );
+        return;
+      }
+      const shareId = data?.id;
+      if (!shareId) {
+        window.alert(t('share.saveFailed'));
+        return;
+      }
+      const url = `${window.location.origin}/share/${shareId}`;
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch {
+        window.alert(t('clipboard.fail'));
+        return;
+      }
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 2500);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      window.alert(`${t('share.saveFailed')} ${msg}`);
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
   const processUploadedFile = useCallback(
     async (file) => {
       if (!file || isAnalyzing) return;
@@ -425,7 +419,16 @@ export default function Dashboard({ session }) {
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-slate-50 lg:flex-row">
+    <div className="relative flex min-h-screen flex-col bg-slate-50 lg:flex-row">
+      {shareCopied && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none fixed bottom-6 left-1/2 z-[100] -translate-x-1/2 rounded-full border border-emerald-200 bg-emerald-50 px-5 py-2.5 text-sm font-semibold text-emerald-900 shadow-lg shadow-emerald-900/15"
+        >
+          {t('analysis.linkCopied')}
+        </div>
+      )}
       <aside className="flex w-full shrink-0 flex-col border-b border-slate-800 bg-slate-900 lg:min-h-screen lg:w-[22rem] lg:min-w-[22rem] lg:max-w-[22rem] lg:flex-none lg:border-b-0 lg:border-r">
         <div className="flex items-center justify-between gap-3 border-b border-slate-800 px-5 py-5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -834,6 +837,16 @@ export default function Dashboard({ session }) {
                           >
                             <FileText className="h-4 w-4 shrink-0" />
                             {pdfExporting ? t('analysis.preparingPdf') : t('analysis.downloadPdf')}
+                          </button>
+                          <button
+                            type="button"
+                            title={t('analysis.share')}
+                            disabled={shareBusy || !activeRecordId}
+                            onClick={() => void handleShareAnalysis()}
+                            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50/80 hover:text-indigo-900 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-40"
+                          >
+                            <Share2 className="h-4 w-4 shrink-0" />
+                            {shareBusy ? t('login.loading') : t('analysis.share')}
                           </button>
                         </>
                       )}

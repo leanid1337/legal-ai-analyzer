@@ -1,15 +1,17 @@
 ﻿import React, { useState, useEffect } from 'react';
+import { Routes, Route } from 'react-router-dom';
 import { supabaseClient, supabaseConfigured, supabaseInitError } from './lib/supabase';
 import Dashboard from './components/Dashboard';
 import LoginPanel from './components/LoginPanel';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import LoginDotsBackground from './components/LoginDotsBackground';
+import SharedResult from './components/SharedResult';
 import { useLanguage } from './context/LanguageContext';
 
 const loginShellBgClass =
   'relative z-0 min-h-screen overflow-hidden flex items-center justify-center p-4';
 
-function ConfigOrLoginShell() {
+function ConfigOrLoginShell({ linkRecoveryMode = false }) {
   const { t } = useLanguage();
 
   if (!supabaseConfigured || supabaseInitError || !supabaseClient) {
@@ -55,25 +57,56 @@ function ConfigOrLoginShell() {
         <h1 className="mb-8 text-center text-3xl font-black tracking-tight text-slate-900">
           LEGAL <span className="text-indigo-600">AI</span>
         </h1>
-        <LoginPanel supabaseClient={supabaseClient} />
+        <LoginPanel supabaseClient={supabaseClient} linkRecoveryMode={linkRecoveryMode} />
       </div>
     </div>
   );
 }
 
 export default function App() {
+  return (
+    <Routes>
+      <Route path="/share/:id" element={<SharedResult />} />
+      <Route path="*" element={<MainApp />} />
+    </Routes>
+  );
+}
+
+function MainApp() {
   const [session, setSession] = useState(null);
+  const [linkRecovery, setLinkRecovery] = useState(false);
 
   useEffect(() => {
     if (!supabaseClient) return undefined;
     supabaseClient.auth.getSession().then(({ data: { session: s } }) => setSession(s));
     const {
       data: { subscription },
-    } = supabaseClient.auth.onAuthStateChange((_event, s) => setSession(s));
+    } = supabaseClient.auth.onAuthStateChange((event, s) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setLinkRecovery(true);
+        setSession(s);
+        return;
+      }
+      if (event === 'USER_UPDATED') {
+        setLinkRecovery(false);
+      }
+      if (event === 'SIGNED_OUT') {
+        setLinkRecovery(false);
+      }
+      setSession(s);
+    });
     return () => subscription.unsubscribe();
   }, []);
 
-  if (!supabaseConfigured || supabaseInitError || !supabaseClient || !session) {
+  if (!supabaseConfigured || supabaseInitError || !supabaseClient) {
+    return <ConfigOrLoginShell />;
+  }
+
+  if (session && linkRecovery) {
+    return <ConfigOrLoginShell linkRecoveryMode />;
+  }
+
+  if (!session) {
     return <ConfigOrLoginShell />;
   }
 

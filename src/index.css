@@ -14,3 +14,83 @@
     background-color: #0f172a;
   }
 }
+
+/* Фон входа: боковое «дыхание» — только transform + opacity (композитинг), без blur */
+@layer components {
+  .login-bg-shell {
+    overflow: hidden;
+    background-color: #0f172a;
+  }
+
+  .login-bg-breathe-side {
+    position: absolute;
+    top: 50%;
+    width: min(58vw, 28rem);
+    height: 125%;
+    will-change: transform, opacity;
+    backface-visibility: hidden;
+  }
+
+  .login-bg-breathe-side--left {
+    left: -8%;
+    transform-origin: left center;
+    background: radial-gradient(
+      ellipse 85% 72% at 0% 50%,
+      rgb(125 211 252 / 0.1) 0%,
+      rgb(59 130 246 / 0.045) 42%,
+      transparent 68%
+    );
+    animation: login-bg-side-breathe-l 7.5s ease-in-out infinite alternate;
+  }
+
+  .login-bg-breathe-side--right {
+    right: -8%;
+    transform-origin: right center;
+    background: radial-gradient(
+      ellipse 85% 72% at 100% 50%,
+      rgb(125 211 252 / 0.09) 0%,
+      rgb(56 189 248 / 0.04) 42%,
+      transparent 68%
+    );
+    animation: login-bg-side-breathe-r 7.5s ease-in-out infinite alternate;
+    animation-delay: -3.75s;
+  }
+
+  .login-bg-breathe-vignette {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+  }
+}
+
+@keyframes login-bg-side-breathe-l {
+  from {
+    opacity: 0.38;
+    transform: translateY(-50%) scale(1, 1);
+  }
+  to {
+    opacity: 0.62;
+    transform: translateY(-50%) scale(1.1, 1.04);
+  }
+}
+
+@keyframes login-bg-side-breathe-r {
+  from {
+    opacity: 0.34;
+    transform: translateY(-50%) scale(1, 1);
+  }
+  to {
+    opacity: 0.58;
+    transform: translateY(-50%) scale(1.12, 1.05);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-bg-breathe-side--left,
+  .login-bg-breathe-side--right {
+    animation: none;
+    opacity: 0.48;
+    transform: translateY(-50%);
+  }
+}

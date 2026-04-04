@@ -10,13 +10,13 @@ const edgeVignette = `linear-gradient(
   rgb(0 0 0 / 0.62) 100%
 )`;
 
-/** Тёмный фон + мягкое затемнение сверху и снизу. */
+/** Тёмный фон, мягкое голубое «дыхание» по бокам (GPU: transform + opacity), виньетка сверху/снизу. */
 export default function LoginDotsBackground() {
   return (
-    <div
-      className="pointer-events-none fixed inset-0 -z-[1] bg-[#0f172a]"
-      aria-hidden
-      style={{ backgroundImage: edgeVignette }}
-    />
+    <div className="login-bg-shell pointer-events-none fixed inset-0 -z-[1]" aria-hidden>
+      <div className="login-bg-breathe-side login-bg-breathe-side--left" />
+      <div className="login-bg-breathe-side login-bg-breathe-side--right" />
+      <div className="login-bg-breathe-vignette" style={{ backgroundImage: edgeVignette }} />
+    </div>
   );
 }
