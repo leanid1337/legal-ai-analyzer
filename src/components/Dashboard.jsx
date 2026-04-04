@@ -54,12 +54,11 @@ const listVariants = {
 };
 
 const cardVariants = {
-  hidden: { opacity: 0, y: 28, filter: 'blur(8px)' },
+  hidden: { opacity: 0, y: 12 },
   visible: {
     opacity: 1,
     y: 0,
-    filter: 'blur(0px)',
-    transition: { type: 'spring', stiffness: 400, damping: 32, mass: 0.78 },
+    transition: { type: 'spring', stiffness: 520, damping: 36, mass: 0.65 },
   },
 };
 
@@ -581,7 +580,7 @@ export default function Dashboard({ session }) {
         <AnimatePresence>
           {isAnalyzing && (
             <Motion.div
-              className="absolute inset-0 z-20 flex items-center justify-center bg-slate-900/25 px-4 backdrop-blur-[10px]"
+              className="absolute inset-0 z-20 flex items-center justify-center bg-slate-900/80 px-4"
               variants={overlayVariants}
               initial="initial"
               animate="animate"
@@ -641,7 +640,7 @@ export default function Dashboard({ session }) {
           )}
         </AnimatePresence>
 
-        <header className="relative z-10 border-b border-slate-200/80 bg-white/90 px-4 py-4 backdrop-blur-sm sm:px-8 sm:py-5">
+        <header className="relative z-10 border-b border-slate-200/80 bg-white px-4 py-4 sm:px-8 sm:py-5">
           <div className="mx-auto max-w-4xl">
             <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">{t('doc.title')}</h1>
             <p className="mt-1 text-sm text-slate-500">{t('doc.subtitle')}</p>

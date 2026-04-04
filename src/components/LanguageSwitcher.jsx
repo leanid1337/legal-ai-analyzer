@@ -29,7 +29,7 @@ export default function LanguageSwitcher({ variant = 'light', size = 'default' }
   return (
     <div
       className={`flex shrink-0 items-center ${shell} ${
-        isSidebar ? 'bg-slate-800/80 ring-1 ring-slate-700/80' : 'bg-white/95 ring-1 ring-slate-200/90 backdrop-blur-sm'
+        isSidebar ? 'bg-slate-800/80 ring-1 ring-slate-700/80' : 'bg-white/95 ring-1 ring-slate-200/90'
       }`}
       role="group"
       aria-label="Language"

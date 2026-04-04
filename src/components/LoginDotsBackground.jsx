@@ -1,11 +1,22 @@
-import React from 'react';
+const edgeVignette = `linear-gradient(
+  to bottom,
+  rgb(0 0 0 / 0.88) 0%,
+  rgb(0 0 0 / 0.45) 10%,
+  rgb(0 0 0 / 0.12) 20%,
+  transparent 32%,
+  transparent 68%,
+  rgb(0 0 0 / 0.1) 80%,
+  rgb(0 0 0 / 0.32) 90%,
+  rgb(0 0 0 / 0.62) 100%
+)`;
 
-/** Точки + виньетка (сверху сильнее). */
+/** Тёмный фон + мягкое затемнение сверху и снизу. */
 export default function LoginDotsBackground() {
   return (
-    <div className="login-bg-dots pointer-events-none absolute inset-0 z-0 overflow-hidden" aria-hidden>
-      <div className="login-bg-dots__layer login-bg-dots__layer--dots" />
-      <div className="login-bg-dots__vignette" />
-    </div>
+    <div
+      className="pointer-events-none fixed inset-0 -z-[1] bg-[#0f172a]"
+      aria-hidden
+      style={{ backgroundImage: edgeVignette }}
+    />
   );
 }
