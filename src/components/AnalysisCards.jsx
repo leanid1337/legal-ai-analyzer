@@ -26,7 +26,7 @@ export default function AnalysisCards({ analysis, t }) {
   const summaryDisplay = summary?.trim() ? summary : t('analysis.noSummary');
 
   return (
-    <Motion.div className="mt-4 space-y-4" variants={listVariants} initial="hidden" animate="visible">
+    <Motion.div className="mt-3 space-y-3 sm:space-y-4" variants={listVariants} initial="hidden" animate="visible">
       <Motion.div
         variants={cardVariants}
         className="rounded-2xl border border-slate-200/80 border-l-[5px] border-l-indigo-600 bg-gradient-to-br from-slate-50 via-white to-indigo-50/50 p-5 shadow-md shadow-slate-200/50 ring-1 ring-slate-200/60"

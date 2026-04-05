@@ -1,5 +1,6 @@
 import { jsPDF } from 'jspdf'
 import autoTable from 'jspdf-autotable'
+import { normalizeAnalysisPayload } from '@/lib/ai'
 
 /** Brand colors (Tailwind-aligned) */
 const SLATE_900 = [15, 23, 42]
@@ -8,12 +9,8 @@ const WHITE = [255, 255, 255]
 const SLATE_100_BLOCK = [241, 245, 249]
 
 const EMERALD_BLOCK = [236, 253, 245]
-const AMBER_BLOCK = [255, 251, 235]
-const RED_BLOCK = [254, 242, 242]
 
 const EMERALD_BORDER = [5, 150, 105]
-const AMBER_BORDER = [217, 119, 6]
-const RED_BORDER = [220, 38, 38]
 
 /**
  * Noto Sans first (Google), then DejaVu — both full TTF with Cyrillic.
@@ -76,20 +73,20 @@ async function loadUnicodeFont(doc) {
   return fontCache.family
 }
 
-function normalizeReportData(data) {
-  return {
-    summary: typeof data?.summary === 'string' ? data.summary : String(data?.summary ?? ''),
-    pros: Array.isArray(data?.pros) ? data.pros.map((x) => String(x)) : [],
-    cons: Array.isArray(data?.cons) ? data.cons.map((x) => String(x)) : [],
-    risks: typeof data?.risks === 'string' ? data.risks : String(data?.risks ?? ''),
-  }
-}
+const RED_HEAD = [185, 28, 28]
+const RED_BLOCK = [254, 242, 242]
 
 /**
- * @param {{ summary: string, pros: string[], cons: string[], risks: string }} data
+ * @param {unknown} data
  */
 export async function generateLegalReport(data) {
-  const { summary, pros, cons, risks } = normalizeReportData(data)
+  const a = normalizeAnalysisPayload(data && typeof data === 'object' ? data : {})
+  const summary = a.summary || '—'
+  const riskLabel =
+    a.risk_level === 'low' ? 'LOW' : a.risk_level === 'high' ? 'HIGH' : 'MEDIUM'
+  const positive = a.positive.map((x) => String(x))
+  const negative = a.negative.map((x) => String(x))
+  const anomalies = a.anomalies.map((x) => String(x))
 
   const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' })
   const FONT = await loadUnicodeFont(doc)
@@ -148,16 +145,49 @@ export async function generateLegalReport(data) {
   })
   y = doc.lastAutoTable.finalY + 10
 
-  // —— 2. Positive Aspects ——
   autoTable(doc, {
     startY: y,
-    head: [['2. POSITIVE ASPECTS']],
-    body: pros.length ? pros.map((p) => [p]) : [['—']],
+    head: [['2. RISK LEVEL']],
+    body: [[riskLabel]],
     theme: 'plain',
     styles: {
       ...tableFont,
       fontSize: 9,
       cellPadding: { top: 3, right: 4, bottom: 3, left: 4 },
+      textColor: SLATE_900,
+      lineColor: INDIGO_600,
+      lineWidth: 0.25,
+      fillColor: SLATE_100_BLOCK,
+    },
+    headStyles: {
+      ...tableFont,
+      fillColor: INDIGO_600,
+      textColor: WHITE,
+      fontSize: 9,
+      halign: 'left',
+    },
+    margin: { left: margin, right: margin },
+  })
+  y = doc.lastAutoTable.finalY + 10
+
+  function listBody(lines) {
+    if (!lines.length) return [['—']]
+    const rows = lines.map((line, idx) => {
+      const wrapped = doc.splitTextToSize(line || '—', pageW - margin * 2 - 14)
+      return wrapped.map((w, j) => (j === 0 ? [`${idx + 1}. ${w}`] : [w]))
+    })
+    return rows.flat()
+  }
+
+  autoTable(doc, {
+    startY: y,
+    head: [['3. POSITIVE ASPECTS']],
+    body: listBody(positive),
+    theme: 'plain',
+    styles: {
+      ...tableFont,
+      fontSize: 9,
+      cellPadding: { top: 2, right: 4, bottom: 2, left: 4 },
       textColor: SLATE_900,
       lineColor: EMERALD_BORDER,
       lineWidth: 0.25,
@@ -172,56 +202,50 @@ export async function generateLegalReport(data) {
     },
     margin: { left: margin, right: margin },
   })
-  y = doc.lastAutoTable.finalY + 10
 
-  // —— 3. Negative Aspects ——
+  y = doc.lastAutoTable.finalY + 10
   autoTable(doc, {
     startY: y,
-    head: [['3. NEGATIVE ASPECTS']],
-    body: cons.length ? cons.map((c) => [c]) : [['—']],
+    head: [['4. NEGATIVE ASPECTS']],
+    body: listBody(negative),
     theme: 'plain',
     styles: {
       ...tableFont,
       fontSize: 9,
-      cellPadding: { top: 3, right: 4, bottom: 3, left: 4 },
-      textColor: SLATE_900,
-      lineColor: AMBER_BORDER,
+      cellPadding: { top: 2, right: 4, bottom: 2, left: 4 },
+      textColor: [127, 29, 29],
+      lineColor: [248, 113, 113],
       lineWidth: 0.25,
-      fillColor: AMBER_BLOCK,
+      fillColor: RED_BLOCK,
     },
     headStyles: {
       ...tableFont,
-      fillColor: [217, 119, 6],
+      fillColor: RED_HEAD,
       textColor: WHITE,
       fontSize: 9,
       halign: 'left',
     },
     margin: { left: margin, right: margin },
   })
+
   y = doc.lastAutoTable.finalY + 10
-
-  // —— 4. Critical Risks & Dangers ——
-  const risksText = risks.trim() || '—'
-  const risksLines = doc.splitTextToSize(risksText, pageW - margin * 2 - 8)
-  const riskRows = risksLines.map((line) => [line])
-
   autoTable(doc, {
     startY: y,
-    head: [['4. CRITICAL RISKS & DANGERS']],
-    body: riskRows,
+    head: [['5. RISKS & ANOMALIES']],
+    body: listBody(anomalies),
     theme: 'plain',
     styles: {
       ...tableFont,
       fontSize: 9,
       cellPadding: { top: 2, right: 4, bottom: 2, left: 4 },
-      textColor: SLATE_900,
-      lineColor: RED_BORDER,
+      textColor: [127, 29, 29],
+      lineColor: [248, 113, 113],
       lineWidth: 0.25,
       fillColor: RED_BLOCK,
     },
     headStyles: {
       ...tableFont,
-      fillColor: [220, 38, 38],
+      fillColor: RED_HEAD,
       textColor: WHITE,
       fontSize: 9,
       halign: 'left',

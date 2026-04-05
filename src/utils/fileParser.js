@@ -1,6 +1,7 @@
 import * as pdfjs from 'pdfjs-dist'
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import mammoth from 'mammoth'
+import { reconstructStructuredTextFromPage, shouldPreferPlainOcrText } from './ocrTableLayout.js'
 
 pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker
 
@@ -230,7 +231,9 @@ export async function parseDOCX(file) {
   }
 }
 
-const ACCEPT_EXT = ['.pdf', '.docx', '.doc']
+const ACCEPT_EXT = ['.pdf', '.docx', '.doc', '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp']
+
+const IMAGE_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp'])
 
 function extensionOf(name) {
   const lower = name.toLowerCase()
@@ -238,6 +241,140 @@ function extensionOf(name) {
     if (lower.endsWith(ext)) return ext
   }
   return ''
+}
+
+/**
+ * @param {File} file
+ * @param {string} ext from extensionOf(name)
+ */
+function shouldOCR(file, ext) {
+  const t = file.type || ''
+  if (t.startsWith('image/')) return true
+  return IMAGE_EXT.has(ext)
+}
+
+const OCR_MIN_SHORT_SIDE = 1500
+const OCR_MAX_PIXELS = 12_000_000
+
+/**
+ * Load image from file for canvas (createImageBitmap with Image fallback).
+ * @param {File} file
+ * @returns {Promise<{ width: number; height: number; draw: (ctx: CanvasRenderingContext2D, dx: number, dy: number, dw: number, dh: number) => void; close?: () => void }>}
+ */
+async function loadImageSource(file) {
+  try {
+    const bitmap = await createImageBitmap(file)
+    return {
+      width: bitmap.width,
+      height: bitmap.height,
+      draw: (ctx, dx, dy, dw, dh) => ctx.drawImage(bitmap, dx, dy, dw, dh),
+      close: () => bitmap.close(),
+    }
+  } catch {
+    const url = URL.createObjectURL(file)
+    try {
+      /** @type {HTMLImageElement} */
+      const img = await new Promise((resolve, reject) => {
+        const el = new Image()
+        el.onload = () => resolve(el)
+        el.onerror = () => reject(new Error('image load'))
+        el.src = url
+      })
+      return {
+        width: img.naturalWidth,
+        height: img.naturalHeight,
+        draw: (ctx, dx, dy, dw, dh) => ctx.drawImage(img, dx, dy, dw, dh),
+      }
+    } finally {
+      URL.revokeObjectURL(url)
+    }
+  }
+}
+
+/**
+ * Upscale small photos, convert to grayscale, cap size — improves Tesseract accuracy.
+ * @param {File} file
+ * @returns {Promise<HTMLCanvasElement>}
+ */
+async function preprocessImageForOCR(file) {
+  const src = await loadImageSource(file)
+  try {
+    const short = Math.min(src.width, src.height)
+    let scale = 1
+    if (short > 0 && short < OCR_MIN_SHORT_SIDE) {
+      scale = Math.min(3, OCR_MIN_SHORT_SIDE / short)
+    }
+    let w = Math.max(1, Math.round(src.width * scale))
+    let h = Math.max(1, Math.round(src.height * scale))
+    const pixels = w * h
+    if (pixels > OCR_MAX_PIXELS) {
+      const r = Math.sqrt(OCR_MAX_PIXELS / pixels)
+      w = Math.max(1, Math.round(w * r))
+      h = Math.max(1, Math.round(h * r))
+    }
+
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) throw new Error('no 2d context')
+    ctx.imageSmoothingEnabled = true
+    ctx.imageSmoothingQuality = 'high'
+    src.draw(ctx, 0, 0, w, h)
+
+    const imgData = ctx.getImageData(0, 0, w, h)
+    const d = imgData.data
+    for (let i = 0; i < d.length; i += 4) {
+      const lum = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2])
+      d[i] = lum
+      d[i + 1] = lum
+      d[i + 2] = lum
+    }
+    ctx.putImageData(imgData, 0, 0)
+    return canvas
+  } finally {
+    src.close?.()
+  }
+}
+
+/**
+ * OCR in the browser (Tesseract). First run downloads language data (~tens of MB).
+ * @param {File} file
+ * @returns {Promise<string>}
+ */
+async function parseImageOCR(file) {
+  try {
+    const [{ createWorker, PSM, OEM }, canvas] = await Promise.all([
+      import('tesseract.js'),
+      preprocessImageForOCR(file),
+    ])
+    const worker = await createWorker('eng+rus+ukr+ces', OEM.DEFAULT, {
+      logger: () => {},
+    })
+    try {
+      await worker.setParameters({
+        tessedit_pageseg_mode: PSM.AUTO_OSD,
+        preserve_interword_spaces: '1',
+        user_defined_dpi: '300',
+      })
+      const { data } = await worker.recognize(canvas, {}, { text: true, blocks: true })
+      const plain = (data.text || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim()
+      let structured = reconstructStructuredTextFromPage(data)
+      structured = structured.replace(/\n{3,}/g, '\n\n').trim()
+      if (shouldPreferPlainOcrText(structured, plain)) {
+        return plain
+      }
+      return structured || plain
+    } finally {
+      await worker.terminate()
+    }
+  } catch {
+    throw new Error('FILE_ERROR:OCR_FAIL')
+  }
 }
 
 /**
@@ -250,13 +387,16 @@ export async function extractTextFromFile(file) {
   }
 
   const ext = extensionOf(file.name)
-  if (!ext) {
+  const ocr = shouldOCR(file, ext)
+  if (!ext && !ocr) {
     throw new Error('FILE_ERROR:UNSUPPORTED_EXT')
   }
 
   let out = ''
 
-  if (ext === '.pdf') {
+  if (ocr) {
+    out = await parseImageOCR(file)
+  } else if (ext === '.pdf') {
     out = await parsePDF(file)
   } else if (ext === '.docx') {
     out = await parseDOCX(file)

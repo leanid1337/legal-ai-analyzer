@@ -7,6 +7,7 @@ import {
   LogOut,
   ShieldCheck,
   CircleCheck,
+  CheckCircle,
   FileText,
   Copy,
   Paperclip,
@@ -14,10 +15,13 @@ import {
   Loader2,
   Trash2,
   Share2,
+  ArrowLeft,
+  AlertTriangle,
 } from 'lucide-react';
 import { supabaseClient } from '../lib/supabase';
 import {
   analyzeContract,
+  normalizeAnalysisPayload,
   parseStoredAnalysisResult,
   translateAnalysis,
   ANALYSIS_TRANSLATION_LOCALES,
@@ -26,7 +30,8 @@ import { generateLegalReport } from '@/utils/pdfGenerator';
 import { extractTextFromFile } from '@/utils/fileParser';
 import { useLanguage } from '@/context/LanguageContext';
 import LanguageSwitcher from '@/components/LanguageSwitcher';
-import AnalysisCards from '@/components/AnalysisCards';
+import BalanceChart from '@/components/BalanceChart';
+import CashFlowChart from '@/components/CashFlowChart';
 
 const FILE_ERR_KEYS = {
   INVALID: 'file.invalid',
@@ -34,6 +39,7 @@ const FILE_ERR_KEYS = {
   NO_TEXT: 'file.noText',
   DOC_LEGACY: 'file.docLegacy',
   WORD_PARSE: 'file.wordParse',
+  OCR_FAIL: 'file.ocrFail',
 };
 
 /**
@@ -65,23 +71,105 @@ const deletePlaqueTransition = { duration: 0.28, ease: [0.22, 1, 0.36, 1] };
 /** Show analysis in the model's original (document) language */
 const ANALYSIS_VIEW_SOURCE = 'source';
 
-function emptyPanel() {
+function emptyAnalysis() {
   return {
     summary: '',
-    pros: [],
-    cons: [],
-    risks: '',
+    risk_level: /** @type {const} */ ('medium'),
+    positive: [],
+    negative: [],
+    anomalies: [],
+    chartData: [],
   };
 }
 
 function hasExportableAnalysis(a) {
   if (!a) return false;
   const hasSummary = typeof a.summary === 'string' && a.summary.trim().length > 0;
-  const hasBody =
-    (a.pros && a.pros.length > 0) ||
-    (a.cons && a.cons.length > 0) ||
-    (typeof a.risks === 'string' && a.risks.trim().length > 0);
-  return hasSummary || hasBody;
+  const hasLists =
+    (Array.isArray(a.positive) && a.positive.some((x) => typeof x === 'string' && x.trim().length > 0)) ||
+    (Array.isArray(a.negative) && a.negative.some((x) => typeof x === 'string' && x.trim().length > 0)) ||
+    (Array.isArray(a.anomalies) && a.anomalies.some((x) => typeof x === 'string' && x.trim().length > 0));
+  return hasSummary || hasLists;
+}
+
+/**
+ * @param {{ level: import('@/lib/ai').AnalysisPayload['risk_level']; t: (k: string) => string; isHigh: boolean }} props
+ */
+function RiskMeter({ level, t, isHigh }) {
+  const labelKey =
+    level === 'low' ? 'dashboard.riskLow' : level === 'high' ? 'dashboard.riskHigh' : 'dashboard.riskMedium';
+  const fillPct = level === 'low' ? 33 : level === 'medium' ? 66 : 100;
+  return (
+    <div
+      className={`rounded-2xl border-2 p-4 shadow-sm sm:p-5 ${
+        isHigh
+          ? 'border-red-500 bg-red-50/40 shadow-red-900/15 ring-1 ring-red-200/80'
+          : 'border-slate-200/90 bg-white ring-1 ring-slate-200/60'
+      }`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500">{t('dashboard.riskMeter')}</h3>
+        <span
+          className={`text-sm font-bold ${
+            isHigh ? 'text-red-700' : level === 'medium' ? 'text-amber-700' : 'text-emerald-700'
+          }`}
+        >
+          {t(labelKey)}
+        </span>
+      </div>
+      <div className="mt-4 h-3.5 w-full overflow-hidden rounded-full bg-slate-200/90">
+        <div
+          className={`h-full rounded-full transition-[width] duration-500 ease-out ${
+            isHigh ? 'bg-red-500' : level === 'medium' ? 'bg-amber-400' : 'bg-emerald-500'
+          }`}
+          style={{ width: `${fillPct}%` }}
+        />
+      </div>
+      <div className="mt-2 flex justify-between text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+        <span>{t('dashboard.riskLow')}</span>
+        <span>{t('dashboard.riskHigh')}</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * @param {{ message: string }} props
+ */
+function EditorAreaSkeleton({ message }) {
+  return (
+    <div
+      className="min-h-[360px] space-y-5 rounded-2xl border border-slate-200/90 bg-white p-5 shadow-sm shadow-slate-200/50"
+      aria-busy="true"
+      aria-live="polite"
+    >
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3 lg:gap-5">
+        <div className="space-y-4 rounded-2xl border border-slate-200/80 bg-slate-50/90 p-5 lg:col-span-1">
+          <div className="h-2.5 w-24 animate-pulse rounded-full bg-slate-200" />
+          <div className="h-7 w-32 animate-pulse rounded-lg bg-slate-200" />
+          <div className="h-20 w-full animate-pulse rounded-xl bg-slate-100" />
+          <div className="h-3 w-full animate-pulse rounded-full bg-slate-100" />
+          <div className="h-3 w-4/5 animate-pulse rounded-full bg-slate-100" />
+        </div>
+        <div className="space-y-4 rounded-2xl border border-slate-200/80 bg-slate-50/90 p-5 lg:col-span-2">
+          <div className="h-2.5 w-40 animate-pulse rounded-full bg-slate-200" />
+          <div className="flex flex-wrap gap-2">
+            {[0, 1, 2, 3, 4].map((i) => (
+              <div
+                key={i}
+                className="h-9 min-w-[8rem] flex-1 animate-pulse rounded-full bg-slate-100 sm:max-w-[12rem]"
+              />
+            ))}
+          </div>
+          <div className="h-10 w-full max-w-md animate-pulse rounded-xl bg-slate-100" />
+        </div>
+      </div>
+      <p className="flex items-center justify-center gap-2 text-center text-xs font-semibold tracking-wide text-indigo-600">
+        <Loader2 className="h-4 w-4 shrink-0 animate-spin" strokeWidth={2.25} aria-hidden />
+        {message}
+      </p>
+    </div>
+  );
 }
 
 export default function Dashboard({ session }) {
@@ -92,7 +180,9 @@ export default function Dashboard({ session }) {
   const [historyError, setHistoryError] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzeError, setAnalyzeError] = useState(null);
-  const [panelAnalysis, setPanelAnalysis] = useState(null);
+  const [analysisData, setAnalysisData] = useState(
+    /** @type {import('@/lib/ai').AnalysisPayload | null} */ (null)
+  );
   const [activeRecordId, setActiveRecordId] = useState(null);
   const [pdfExporting, setPdfExporting] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState(false);
@@ -153,10 +243,38 @@ export default function Dashboard({ session }) {
   }, [activeRecordId]);
 
   const displayAnalysis = useMemo(() => {
-    if (!panelAnalysis) return null;
-    if (analysisViewLocale === ANALYSIS_VIEW_SOURCE) return panelAnalysis;
-    return translationCache[analysisViewLocale] ?? panelAnalysis;
-  }, [panelAnalysis, analysisViewLocale, translationCache]);
+    if (!analysisData) return null;
+    if (analysisViewLocale === ANALYSIS_VIEW_SOURCE) return analysisData;
+    return translationCache[analysisViewLocale] ?? analysisData;
+  }, [analysisData, analysisViewLocale, translationCache]);
+
+  const hasFinanceCharts = (displayAnalysis?.chartData?.length ?? 0) > 0;
+
+  const balanceChartSeries = useMemo(() => {
+    const cd = displayAnalysis?.chartData;
+    if (!cd?.length) return undefined;
+    return cd.map((row) => ({ time: row.name, balance: row.balance }));
+  }, [displayAnalysis]);
+
+  const cashFlowChartSeries = useMemo(() => {
+    const cd = displayAnalysis?.chartData;
+    if (!cd?.length) return undefined;
+    return cd.map((row) => ({
+      month: row.name,
+      income: row.income,
+      expenses: row.expenses,
+    }));
+  }, [displayAnalysis]);
+
+  const cashFlowChartLabels = useMemo(
+    () => ({
+      income: t('chart.income'),
+      expenses: t('chart.expenses'),
+      difference: t('chart.difference'),
+      avgMonthlyExpense: t('chart.avgMonthlyExpense'),
+    }),
+    [t]
+  );
 
   const handleAnalysisLocaleChange = useCallback(
     async (value) => {
@@ -166,13 +284,13 @@ export default function Dashboard({ session }) {
         return;
       }
       setAnalysisViewLocale(value);
-      if (!panelAnalysis) return;
+      if (!analysisData) return;
       if (translationCacheRef.current[value]) return;
 
       setTranslationLoading(true);
       try {
         const res = await translateAnalysis(
-          panelAnalysis,
+          analysisData,
           /** @type {(typeof ANALYSIS_TRANSLATION_LOCALES)[number]} */ (value)
         );
         if (!res.ok) {
@@ -185,7 +303,7 @@ export default function Dashboard({ session }) {
         setTranslationLoading(false);
       }
     },
-    [panelAnalysis, t]
+    [analysisData, t]
   );
 
   function openRecordInMain(row) {
@@ -193,7 +311,17 @@ export default function Dashboard({ session }) {
     setActiveRecordId(row.id);
     setDocText(row.original_text || '');
     const parsed = parseStoredAnalysisResult(row.result);
-    setPanelAnalysis(parsed || emptyPanel());
+    setAnalysisData(parsed || emptyAnalysis());
+  }
+
+  function handleBackToEditor() {
+    setAnalysisData(null);
+    setActiveRecordId(null);
+    setTranslationCache({});
+    translationCacheRef.current = {};
+    setAnalysisViewLocale(ANALYSIS_VIEW_SOURCE);
+    setTranslationError(null);
+    setAnalyzeError(null);
   }
 
   function togglePendingDelete(rowId) {
@@ -221,7 +349,7 @@ export default function Dashboard({ session }) {
       setPendingDeleteId(null);
       if (activeRecordId === rowId) {
         setActiveRecordId(null);
-        setPanelAnalysis(null);
+        setAnalysisData(null);
         setDocText('');
       }
       setHistory((prev) => prev.filter((r) => r.id !== rowId));
@@ -274,9 +402,11 @@ export default function Dashboard({ session }) {
     try {
       const payload = {
         summary: displayAnalysis.summary ?? '',
-        pros: displayAnalysis.pros ?? [],
-        cons: displayAnalysis.cons ?? [],
-        risks: displayAnalysis.risks ?? '',
+        risk_level: displayAnalysis.risk_level ?? 'medium',
+        positive: displayAnalysis.positive ?? [],
+        negative: displayAnalysis.negative ?? [],
+        anomalies: displayAnalysis.anomalies ?? [],
+        chartData: displayAnalysis.chartData ?? [],
       };
       const resultJson = JSON.stringify(payload);
       const { data, error } = await supabaseClient
@@ -390,7 +520,18 @@ export default function Dashboard({ session }) {
         return;
       }
 
-      const resultJson = JSON.stringify(aiResult.data);
+      let normalized;
+      let resultJson;
+      try {
+        normalized = normalizeAnalysisPayload(aiResult.data);
+        resultJson = JSON.stringify(normalized);
+        JSON.parse(resultJson);
+      } catch {
+        setAnalyzeError(t('analysis.parseError'));
+        window.alert(t('analysis.parseError'));
+        return;
+      }
+
       const { data: inserted, error } = await supabaseClient
         .from('analyzed_docs')
         .insert({
@@ -409,10 +550,13 @@ export default function Dashboard({ session }) {
         return;
       }
 
-      setPanelAnalysis(aiResult.data);
+      setAnalysisData(normalized);
       setActiveRecordId(inserted?.id ?? null);
       setDocText('');
       await fetchHistory();
+    } catch {
+      setAnalyzeError(t('analysis.parseError'));
+      window.alert(t('analysis.parseError'));
     } finally {
       setIsAnalyzing(false);
     }
@@ -644,218 +788,371 @@ export default function Dashboard({ session }) {
         </AnimatePresence>
 
         <header className="relative z-10 border-b border-slate-200/80 bg-white px-4 py-4 sm:px-8 sm:py-5">
-          <div className="mx-auto max-w-4xl">
+          <div className="mx-auto max-w-[min(100%,1280px)]">
             <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">{t('doc.title')}</h1>
             <p className="mt-1 text-sm text-slate-500">{t('doc.subtitle')}</p>
           </div>
         </header>
 
         <div className="relative z-0 flex flex-1 flex-col overflow-auto px-4 py-6 sm:px-8 sm:py-8">
-          <div className="mx-auto w-full max-w-4xl">
-            <form onSubmit={handleAnalyze} className="flex flex-col gap-4">
-              <label className="sr-only" htmlFor="doc-input">
-                {t('doc.title')}
-              </label>
-
-              <input
-                ref={fileInputRef}
-                id="contract-file-input"
-                type="file"
-                accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                className="sr-only"
-                tabIndex={-1}
-                onChange={handleFileInputChange}
-                disabled={isAnalyzing || fileParsing}
-              />
-
-              <div
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    if (!isAnalyzing && !fileParsing) fileInputRef.current?.click();
-                  }
-                }}
-                onClick={() => {
-                  if (!isAnalyzing && !fileParsing) fileInputRef.current?.click();
-                }}
-                onDrop={handleDrop}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                className={`group relative cursor-pointer rounded-2xl border-2 border-dashed px-4 py-8 text-center transition ${
-                  isDragOver
-                    ? 'border-indigo-500 bg-indigo-100/70 shadow-inner shadow-indigo-500/10'
-                    : 'border-slate-300/90 bg-slate-50/80 hover:border-indigo-400 hover:bg-indigo-50/50'
-                } ${isAnalyzing || fileParsing ? 'pointer-events-none opacity-60' : ''}`}
+          <div className="mx-auto flex w-full max-w-[min(100%,1280px)] flex-col gap-6">
+              <form
+                onSubmit={handleAnalyze}
+                className="flex w-full min-w-0 flex-col gap-4 lg:flex-row lg:items-start lg:gap-5"
               >
-                <div className="mx-auto flex max-w-md flex-col items-center gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-white shadow-sm ring-1 ring-slate-200/80 transition group-hover:bg-indigo-50 group-hover:ring-indigo-200/60">
-                    {fileParsing ? (
-                      <Loader2 className="h-6 w-6 animate-spin text-indigo-600" aria-hidden />
-                    ) : (
-                      <Paperclip className="h-6 w-6 text-indigo-600 transition group-hover:scale-105" aria-hidden />
-                    )}
+                <label className="sr-only" htmlFor="doc-input">
+                  {t('doc.title')}
+                </label>
+
+                <input
+                  ref={fileInputRef}
+                  id="contract-file-input"
+                  type="file"
+                  accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp,.gif,.bmp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/jpeg,image/png,image/webp,image/gif,image/bmp"
+                  className="sr-only"
+                  tabIndex={-1}
+                  onChange={handleFileInputChange}
+                  disabled={isAnalyzing || fileParsing}
+                />
+
+                <div className="flex w-full shrink-0 flex-col gap-3 lg:w-[200px] lg:max-w-[220px]">
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        if (!isAnalyzing && !fileParsing) fileInputRef.current?.click();
+                      }
+                    }}
+                    onClick={() => {
+                      if (!isAnalyzing && !fileParsing) fileInputRef.current?.click();
+                    }}
+                    onDrop={handleDrop}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    className={`group relative flex min-h-[360px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-2.5 py-3 text-center shadow-sm shadow-slate-200/50 ring-slate-200/80 transition ${
+                      isDragOver
+                        ? 'border-indigo-500 bg-indigo-100/70 shadow-inner shadow-indigo-500/10'
+                        : 'border-slate-200/90 bg-slate-50/80 hover:border-indigo-400 hover:bg-indigo-50/50'
+                    } ${isAnalyzing || fileParsing ? 'pointer-events-none opacity-60' : ''}`}
+                  >
+                    <div className="mx-auto flex max-w-[11rem] flex-col items-center justify-center gap-2">
+                      <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-white shadow-sm ring-1 ring-slate-200/80 transition group-hover:bg-indigo-50 group-hover:ring-indigo-200/60">
+                        {fileParsing ? (
+                          <Loader2 className="h-5 w-5 animate-spin text-indigo-600" aria-hidden />
+                        ) : (
+                          <Paperclip className="h-5 w-5 text-indigo-600 transition group-hover:scale-105" aria-hidden />
+                        )}
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold leading-snug text-slate-800">
+                          {fileParsing ? t('doc.extracting') : t('doc.upload')}
+                        </p>
+                        <p className="mt-1 flex items-center justify-center gap-1 text-[11px] leading-snug text-slate-500">
+                          <Upload className="h-3 w-3 shrink-0 text-indigo-500" aria-hidden />
+                          {t('doc.uploadHint')}
+                        </p>
+                        <p className="mt-1.5 text-[10px] leading-snug text-slate-400">{t('doc.uploadFormats')}</p>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm font-semibold text-slate-800">{fileParsing ? t('doc.extracting') : t('doc.upload')}</p>
-                    <p className="mt-1 flex items-center justify-center gap-1.5 text-xs text-slate-500">
-                      <Upload className="h-3.5 w-3.5 shrink-0 text-indigo-500" aria-hidden />
-                      {t('doc.uploadHint')}
-                    </p>
-                    <p className="mt-2 text-[11px] text-slate-400">{t('doc.uploadFormats')}</p>
+
+                  {uploadError && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-xs text-amber-900">
+                      <p className="font-medium">{t('file.label')}</p>
+                      <p className="mt-1 leading-snug">{uploadError}</p>
+                    </div>
+                  )}
+
+                  <div className="flex justify-stretch lg:justify-start">
+                    <button
+                      type="button"
+                      onClick={handleClearDocument}
+                      disabled={isAnalyzing || fileParsing || (!docText && !uploadError)}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-40 lg:w-auto"
+                    >
+                      {t('doc.clear')}
+                    </button>
                   </div>
                 </div>
-              </div>
 
-              {uploadError && (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                  <p className="font-medium">{t('file.label')}</p>
-                  <p className="mt-1">{uploadError}</p>
-                </div>
-              )}
+                <div className="flex min-w-0 flex-1 flex-col gap-4">
+                  {isAnalyzing && <EditorAreaSkeleton message={t('doc.analyzing')} />}
 
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={handleClearDocument}
-                  disabled={isAnalyzing || fileParsing || (!docText && !uploadError)}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-40"
-                >
-                  {t('doc.clear')}
-                </button>
-              </div>
-
-              <textarea
-                id="doc-input"
-                value={docText}
-                onChange={(e) => setDocText(e.target.value)}
-                placeholder={t('doc.placeholder')}
-                rows={12}
-                disabled={isAnalyzing || fileParsing}
-                className="min-h-[240px] w-full resize-y rounded-2xl border border-slate-200/90 bg-white px-5 py-4 font-doc font-light text-[calc(0.875rem*1.3)] leading-[calc(1.625*1.3)] text-slate-800 shadow-sm shadow-slate-200/50 outline-none ring-slate-200/80 transition placeholder:text-slate-400 focus:border-indigo-300 focus:ring-4 focus:ring-indigo-500/15 disabled:cursor-not-allowed disabled:opacity-60"
-              />
-
-              {analyzeError && (
-                <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                  <p className="font-medium">{t('error.title')}</p>
-                  <p className="mt-1 whitespace-pre-wrap">{analyzeError}</p>
-                </div>
-              )}
-
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="submit"
-                  disabled={isAnalyzing || !docText.trim()}
-                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white shadow-md shadow-indigo-600/25 transition hover:bg-indigo-500 disabled:pointer-events-none disabled:opacity-50"
-                >
-                  {isAnalyzing ? (
+                  {!isAnalyzing && !analysisData && (
                     <>
-                      <Send className="h-4 w-4 animate-pulse" />
-                      {t('doc.analyzing')}
-                    </>
-                  ) : (
-                    <>
-                      <Send className="h-4 w-4" />
-                      {t('doc.analyze')}
+                      <textarea
+                        id="doc-input"
+                        value={docText}
+                        onChange={(e) => setDocText(e.target.value)}
+                        placeholder={t('doc.placeholder')}
+                        rows={16}
+                        disabled={fileParsing}
+                        className="min-h-[360px] w-full resize-y rounded-2xl border border-slate-200/90 bg-white px-4 py-3 font-doc font-light text-[0.8125rem] leading-relaxed text-slate-800 shadow-sm shadow-slate-200/50 outline-none ring-slate-200/80 transition placeholder:text-slate-400 focus:border-indigo-300 focus:ring-4 focus:ring-indigo-500/15 disabled:cursor-not-allowed disabled:opacity-60"
+                      />
+
+                      {analyzeError && (
+                        <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                          <p className="font-medium">{t('error.title')}</p>
+                          <p className="mt-1 whitespace-pre-wrap">{analyzeError}</p>
+                        </div>
+                      )}
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <button
+                          type="submit"
+                          disabled={!docText.trim()}
+                          className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white shadow-md shadow-indigo-600/25 transition hover:bg-indigo-500 disabled:pointer-events-none disabled:opacity-50"
+                        >
+                          <Send className="h-4 w-4" />
+                          {t('doc.analyze')}
+                        </button>
+                        <span className="flex max-w-[14rem] items-start gap-1.5 text-xs leading-snug text-slate-500">
+                          <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                          {t('doc.secureNote')}
+                        </span>
+                      </div>
                     </>
                   )}
-                </button>
-                <span className="flex items-center gap-1.5 text-xs text-slate-500">
-                  <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-                  {t('doc.secureNote')}
-                </span>
-              </div>
-            </form>
 
-            <AnimatePresence mode="wait">
-              {panelAnalysis && displayAnalysis && (
-                <Motion.div
-                  key={`${activeRecordId ?? 'draft'}-${analysisViewLocale}`}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0, transition: { duration: 0.15 } }}
-                  transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-                >
-                  <div className="mt-8 flex flex-col gap-4 sm:mt-10 lg:flex-row lg:items-start lg:justify-between lg:gap-6">
-                    <div className="min-w-0 flex-1 space-y-3">
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{t('analysis.outputLabel')}</p>
-                        <p className="mt-0.5 text-sm font-medium text-slate-600">{t('analysis.outputSub')}</p>
-                      </div>
-                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-                        <label htmlFor="analysis-lang-select" className="shrink-0 text-xs font-medium text-slate-500">
-                          {t('analysis.translateLabel')}
-                        </label>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <select
-                            id="analysis-lang-select"
-                            value={analysisViewLocale}
-                            onChange={(e) => void handleAnalysisLocaleChange(e.target.value)}
-                            disabled={translationLoading || !hasExportableAnalysis(panelAnalysis)}
-                            className="min-w-[12rem] rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            <option value={ANALYSIS_VIEW_SOURCE}>{t('analysis.originalLanguage')}</option>
-                            {ANALYSIS_TRANSLATION_LOCALES.map((loc) => (
-                              <option key={loc} value={loc}>
-                                {t(`analysis.lang.${loc}`)}
-                              </option>
-                            ))}
-                          </select>
-                          {translationLoading && (
-                            <span className="inline-flex items-center gap-1.5 text-xs text-indigo-600">
-                              <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.25} aria-hidden />
-                              {t('analysis.translating')}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      {translationError && <p className="text-xs leading-snug text-red-600">{translationError}</p>}
-                    </div>
-                    <div className="flex shrink-0 flex-wrap items-center gap-2 lg:justify-end">
-                      <button
-                        type="button"
-                        title={t('analysis.copySummary')}
-                        onClick={handleCopySummary}
-                        disabled={!displayAnalysis?.summary?.trim()}
-                        className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50/80 hover:text-indigo-900 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-40"
+                  {!isAnalyzing && analysisData && displayAnalysis ? (
+                      <div
+                        className={`space-y-5 ${
+                          displayAnalysis.risk_level === 'high'
+                            ? 'rounded-2xl border-2 border-red-500/70 bg-red-50/30 p-4 shadow-inner shadow-red-900/10 ring-2 ring-red-200/60 sm:p-6'
+                            : ''
+                        }`}
                       >
-                        <Copy className="h-4 w-4 shrink-0" />
-                        {copyFeedback ? t('analysis.copied') : t('analysis.copySummary')}
-                      </button>
-                      {hasExportableAnalysis(displayAnalysis) && (
-                        <>
-                          <span className="hidden text-[11px] text-slate-400 sm:inline" title={t('analysis.exportHint')}>
-                            {t('analysis.exportHint')}
-                          </span>
-                          <button
-                            type="button"
-                            title={t('analysis.downloadPdf')}
-                            disabled={pdfExporting}
-                            onClick={handleExportPdf}
-                            className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-md shadow-indigo-600/30 transition hover:bg-indigo-500 hover:shadow-lg hover:shadow-indigo-600/35 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-55"
+                        <div className="space-y-3 border-b border-slate-200/80 pb-4">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                                {t('analysis.outputLabel')}
+                              </p>
+                              <p className="mt-0.5 text-xs font-medium text-slate-600">{t('analysis.outputSub')}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={handleBackToEditor}
+                              className="inline-flex items-center justify-center gap-2 self-start rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50/80 hover:text-indigo-900"
+                            >
+                              <ArrowLeft className="h-3.5 w-3.5 shrink-0" aria-hidden />
+                              {t('analysis.backToEditor')}
+                            </button>
+                          </div>
+                          <div className="flex flex-col gap-2 sm:max-w-md">
+                            <label htmlFor="analysis-lang-select" className="text-xs font-medium text-slate-500">
+                              {t('analysis.translateLabel')}
+                            </label>
+                            <select
+                              id="analysis-lang-select"
+                              value={analysisViewLocale}
+                              onChange={(e) => void handleAnalysisLocaleChange(e.target.value)}
+                              disabled={translationLoading || !hasExportableAnalysis(analysisData)}
+                              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm outline-none transition focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <option value={ANALYSIS_VIEW_SOURCE}>{t('analysis.originalLanguage')}</option>
+                              {ANALYSIS_TRANSLATION_LOCALES.map((loc) => (
+                                <option key={loc} value={loc}>
+                                  {t(`analysis.lang.${loc}`)}
+                                </option>
+                              ))}
+                            </select>
+                            {translationLoading ? (
+                              <span className="inline-flex items-center gap-1.5 text-xs text-indigo-600">
+                                <Loader2 className="h-4 w-4 animate-spin" strokeWidth={2.25} aria-hidden />
+                                {t('analysis.translating')}
+                              </span>
+                            ) : null}
+                          </div>
+                          {translationError ? (
+                            <p className="text-xs leading-snug text-red-600">{translationError}</p>
+                          ) : null}
+                          <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                            <button
+                              type="button"
+                              title={t('analysis.copySummary')}
+                              onClick={handleCopySummary}
+                              disabled={!displayAnalysis?.summary?.trim()}
+                              className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50/80 hover:text-indigo-900 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-40 sm:flex-1"
+                            >
+                              <Copy className="h-3.5 w-3.5 shrink-0" />
+                              {copyFeedback ? t('analysis.copied') : t('analysis.copySummary')}
+                            </button>
+                            {hasExportableAnalysis(displayAnalysis) ? (
+                              <>
+                                <button
+                                  type="button"
+                                  title={t('analysis.downloadPdf')}
+                                  disabled={pdfExporting}
+                                  onClick={handleExportPdf}
+                                  className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-3 py-2 text-xs font-semibold text-white shadow-md shadow-indigo-600/30 transition hover:bg-indigo-500 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-55 sm:flex-1"
+                                >
+                                  <FileText className="h-3.5 w-3.5 shrink-0" />
+                                  {pdfExporting ? t('analysis.preparingPdf') : t('analysis.downloadPdf')}
+                                </button>
+                                <button
+                                  type="button"
+                                  title={t('analysis.share')}
+                                  disabled={shareBusy || !activeRecordId}
+                                  onClick={() => void handleShareAnalysis()}
+                                  className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50/80 hover:text-indigo-900 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-40 sm:flex-1"
+                                >
+                                  <Share2 className="h-3.5 w-3.5 shrink-0" />
+                                  {shareBusy ? t('login.loading') : t('analysis.share')}
+                                </button>
+                              </>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <RiskMeter
+                          level={displayAnalysis.risk_level}
+                          t={t}
+                          isHigh={displayAnalysis.risk_level === 'high'}
+                        />
+
+                        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-5 lg:items-stretch">
+                          <div className="flex flex-col rounded-2xl border border-emerald-200/90 bg-gradient-to-br from-emerald-50/95 via-white to-white p-5 shadow-md ring-1 ring-emerald-100/80">
+                            <div className="flex items-center gap-2.5">
+                              <CheckCircle className="h-6 w-6 shrink-0 text-emerald-600" strokeWidth={2} aria-hidden />
+                              <h3 className="text-[11px] font-bold uppercase tracking-[0.16em] text-emerald-900">
+                                {t('dashboard.positiveTitle')}
+                              </h3>
+                            </div>
+                            <ul className="mt-4 flex-1 list-none space-y-2.5 p-0 text-sm leading-relaxed text-emerald-950">
+                              {displayAnalysis.positive?.length ? (
+                                displayAnalysis.positive.map((item, i) => (
+                                  <li
+                                    key={i}
+                                    className="flex gap-2 rounded-xl border border-emerald-100/80 bg-white/80 px-3 py-2 shadow-sm"
+                                  >
+                                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" aria-hidden />
+                                    <span className="min-w-0 flex-1">{String(item).trim()}</span>
+                                  </li>
+                                ))
+                              ) : (
+                                <li className="rounded-xl border border-dashed border-emerald-200/60 px-3 py-3 text-emerald-800/70">
+                                  {t('card.dash')}
+                                </li>
+                              )}
+                            </ul>
+                          </div>
+
+                          <div
+                            className={`flex flex-col rounded-2xl border-2 p-5 shadow-lg ${
+                              displayAnalysis.risk_level === 'high'
+                                ? 'border-red-500 bg-red-50/25 shadow-red-900/20'
+                                : 'border-red-200/90 bg-gradient-to-br from-red-50/40 via-white to-white shadow-red-900/5'
+                            }`}
                           >
-                            <FileText className="h-4 w-4 shrink-0" />
-                            {pdfExporting ? t('analysis.preparingPdf') : t('analysis.downloadPdf')}
-                          </button>
-                          <button
-                            type="button"
-                            title={t('analysis.share')}
-                            disabled={shareBusy || !activeRecordId}
-                            onClick={() => void handleShareAnalysis()}
-                            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-indigo-200 hover:bg-indigo-50/80 hover:text-indigo-900 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-40"
-                          >
-                            <Share2 className="h-4 w-4 shrink-0" />
-                            {shareBusy ? t('login.loading') : t('analysis.share')}
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <AnalysisCards analysis={displayAnalysis} t={t} />
-                </Motion.div>
-              )}
-            </AnimatePresence>
+                            <div className="flex items-center gap-2.5">
+                              <AlertTriangle className="h-6 w-6 shrink-0 text-red-600" strokeWidth={2} aria-hidden />
+                              <h3 className="text-[11px] font-bold uppercase tracking-[0.16em] text-red-900">
+                                {t('dashboard.negativeRisksTitle')}
+                              </h3>
+                            </div>
+                            <p className="mt-4 text-[10px] font-bold uppercase tracking-wider text-red-800/90">
+                              {t('dashboard.negativesSub')}
+                            </p>
+                            <ul className="mt-2 list-none space-y-2 p-0 text-sm leading-relaxed text-red-950">
+                              {displayAnalysis.negative?.length ? (
+                                displayAnalysis.negative.map((item, i) => (
+                                  <li
+                                    key={`n-${i}`}
+                                    className="flex gap-2 rounded-xl border border-red-200/70 bg-red-50/10 px-3 py-2 text-red-900"
+                                  >
+                                    <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-red-500" aria-hidden />
+                                    <span className="min-w-0 flex-1">{String(item).trim()}</span>
+                                  </li>
+                                ))
+                              ) : (
+                                <li className="text-red-800/60">{t('card.dash')}</li>
+                              )}
+                            </ul>
+                            <p className="mt-4 text-[10px] font-bold uppercase tracking-wider text-red-800/90">
+                              {t('dashboard.anomaliesSub')}
+                            </p>
+                            <ul className="mt-2 list-none space-y-2 p-0">
+                              {displayAnalysis.anomalies?.length ? (
+                                displayAnalysis.anomalies.map((item, i) => (
+                                  <li
+                                    key={`a-${i}`}
+                                    className="flex gap-2.5 rounded-xl border border-red-300/60 bg-red-50/10 px-3 py-2.5 text-sm leading-snug text-red-900 shadow-sm"
+                                  >
+                                    <AlertTriangle
+                                      className="mt-0.5 h-4 w-4 shrink-0 text-red-600"
+                                      strokeWidth={2.25}
+                                      aria-hidden
+                                    />
+                                    <span className="min-w-0 flex-1">{String(item).trim()}</span>
+                                  </li>
+                                ))
+                              ) : (
+                                <li className="text-sm text-red-800/60">{t('card.dash')}</li>
+                              )}
+                            </ul>
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border border-slate-200/90 bg-white p-5 shadow-md ring-1 ring-slate-200/60 sm:p-6">
+                          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-500">
+                            {t('analysis.summaryCardTitle')}
+                          </p>
+                          <p className="mt-3 text-base font-medium leading-relaxed text-slate-800">
+                            {displayAnalysis.summary?.trim() ? displayAnalysis.summary : t('analysis.noSummary')}
+                          </p>
+                        </div>
+
+                        {hasFinanceCharts ? (
+                          <div className="grid w-full grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-5">
+                            <section
+                              className="flex flex-col rounded-2xl border border-slate-700/90 bg-slate-900 p-4 shadow-lg shadow-slate-950/40 ring-1 ring-white/[0.06] sm:p-5"
+                              aria-labelledby="chart-total-balance-title-inline"
+                            >
+                              <h2
+                                id="chart-total-balance-title-inline"
+                                className="mb-3 text-sm font-bold tracking-tight text-white sm:text-base"
+                              >
+                                {t('balance.chartTotalBalance')}
+                              </h2>
+                              <div className="min-h-0 flex-1 rounded-xl border border-slate-700/70 bg-slate-950/60 p-3 sm:p-4">
+                                <BalanceChart
+                                  variant="dark"
+                                  height={240}
+                                  data={balanceChartSeries}
+                                  isLoading={false}
+                                />
+                              </div>
+                            </section>
+                            <section
+                              className="flex flex-col rounded-2xl border border-slate-700/90 bg-slate-900 p-4 shadow-lg shadow-slate-950/40 ring-1 ring-white/[0.06] sm:p-5"
+                              aria-labelledby="chart-cashflow-title-inline"
+                            >
+                              <h2
+                                id="chart-cashflow-title-inline"
+                                className="mb-3 text-sm font-bold tracking-tight text-white sm:text-base"
+                              >
+                                {t('balance.chartIncomeVsExpenses')}
+                              </h2>
+                              <div className="min-h-0 flex-1 rounded-xl border border-slate-700/70 bg-slate-950/60 p-3 sm:p-4">
+                                <CashFlowChart
+                                  variant="dark"
+                                  height={240}
+                                  data={cashFlowChartSeries}
+                                  isLoading={false}
+                                  labels={cashFlowChartLabels}
+                                />
+                              </div>
+                            </section>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                </div>
+              </form>
+
           </div>
         </div>
       </main>

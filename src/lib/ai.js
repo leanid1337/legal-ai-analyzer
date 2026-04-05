@@ -5,23 +5,195 @@
 
 import { viteEnv } from './viteEnv.js'
 
-const SYSTEM_PROMPT = `You are a professional legal analyst. Analyze the contract and return the response strictly as a single JSON object with exactly these keys (English key names only): "summary" (short title string), "pros" (array of strings — positive aspects), "cons" (array of strings — negative aspects), "risks" (single detailed string about dangers and critical issues).
+const SYSTEM_PROMPT = `You are a professional analytical legal agent. Analyze the user's input (contract or legal document text). Respond with EXACTLY ONE JSON object and NOTHING else — no markdown, no code fences, no commentary before or after the JSON.
 
-Language rule: Detect the primary language of the contract text provided by the user (e.g. English, Czech, Ukrainian, Russian, or any other language). Write ALL string values inside the JSON — summary, every item in pros and cons, and risks — in that SAME language. If the text mixes languages, use the dominant language of the legal document. Do not translate the user's document language into another language unless the contract is clearly in one language throughout.
+Required JSON shape (English keys only):
+{
+  "summary": "string — concise analytical conclusion, max 200 characters",
+  "risk_level": "low" | "medium" | "high",
+  "positive": ["string", "string", ...] — favorable clauses, strengths, or opportunities (use [] if none),
+  "negative": ["string", ...] — unfavorable terms, weaknesses, or burdens (use [] if none),
+  "anomalies": ["string", ...] — critical dangers, red flags, unusual or high-risk items (use [] if none),
+  "chartData": [] OR [ { "name": "Jan", "income": 400, "expenses": 250 }, ... ]
+}
 
-No markdown, no code fences, no text before or after the JSON.`
+Rules:
+- "summary": one tight paragraph or sentence; stay at or under 200 characters.
+- "risk_level": "low" = generally favorable; "medium" = mixed or needs attention; "high" = serious legal/financial risk.
+- "positive", "negative", "anomalies": distinct arrays; do not duplicate the same point across arrays.
+- "chartData": CRITICAL — use ONLY when the document materially discusses money or measurable economic flows. That includes: amounts, fees, salaries, rent, payment schedules, penalties, fines, prices, budgets, compensation, invoices, deposits, loans, revenue, costs, currency, or similar. If the text is purely non-financial (e.g. only confidentiality, jurisdiction, liability wording, HR policy without numbers, generic obligations with no sums), you MUST set "chartData" to an empty array []. When financial context exists, provide 6–12 points. Each object MUST have "name" (short period label in the document language), "income", and "expenses" as numbers only (no currency symbols). Optional "balance" for cumulative position; if omitted, a running balance may be inferred. Use REAL figures from the document when present; otherwise infer a plausible coherent series consistent with the document scale. Never invent charts for documents with no monetary or numeric economic substance.
+
+Language: Detect the document language. Write "summary", list items, and each chartData "name" in that language. JSON keys stay in English.
+
+Output valid JSON only.`
 
 /**
- * @typedef {{ summary: string, pros: string[], cons: string[], risks: string }} AnalysisPayload
+ * @typedef {{ name: string, balance: number, income: number, expenses: number }} ChartDataRow
+ * @typedef {'low' | 'medium' | 'high'} RiskLevel
+ * @typedef {{ summary: string, risk_level: RiskLevel, positive: string[], negative: string[], anomalies: string[], chartData: ChartDataRow[] }} AnalysisPayload
  */
 
 /**
- * Parse JSON from model output (handles ```json fences and trailing text).
+ * @param {unknown} raw
+ * @returns {ChartDataRow[]}
+ */
+function normalizeChartData(raw) {
+  if (!Array.isArray(raw)) return []
+  /** @type {ChartDataRow[]} */
+  const out = []
+  let running = 0
+  for (const row of raw) {
+    if (!row || typeof row !== 'object') continue
+    const r = /** @type {Record<string, unknown>} */ (row)
+    const nameRaw =
+      typeof r.name === 'string'
+        ? r.name.trim()
+        : typeof r.month === 'string'
+          ? r.month.trim()
+          : ''
+    const name = nameRaw.slice(0, 24)
+    const income = Number(r.income)
+    const expenses = Number(r.expenses)
+    const balRaw = Number(r.balance)
+    if (!name || !Number.isFinite(income) || !Number.isFinite(expenses)) {
+      continue
+    }
+    let balance
+    if (Number.isFinite(balRaw)) {
+      balance = balRaw
+      running = balRaw
+    } else {
+      running += income - expenses
+      balance = running
+    }
+    out.push({ name, balance, income, expenses })
+  }
+  return out
+}
+
+/**
+ * @param {unknown} v
+ * @returns {RiskLevel}
+ */
+function normalizeRiskLevel(v) {
+  const s = typeof v === 'string' ? v.toLowerCase().trim() : ''
+  if (s === 'low' || s === 'medium' || s === 'high') {
+    return /** @type {RiskLevel} */ (s)
+  }
+  if (s === 'green') return 'low'
+  if (s === 'yellow') return 'medium'
+  if (s === 'red') return 'high'
+  return 'medium'
+}
+
+/**
+ * @param {unknown} raw
+ * @returns {string[]}
+ */
+function normalizeStringList(raw) {
+  if (Array.isArray(raw)) {
+    return raw.map((x) => String(x).trim()).filter(Boolean)
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    return [raw.trim()]
+  }
+  return []
+}
+
+/**
+ * @param {Record<string, unknown>} o
+ */
+function migrateLegacyLists(o) {
+  /** @type {string[]} */
+  let positive = normalizeStringList(o.positive)
+  /** @type {string[]} */
+  let negative = normalizeStringList(o.negative)
+  /** @type {string[]} */
+  let anomalies = normalizeStringList(o.anomalies)
+
+  if (positive.length === 0 && Array.isArray(o.pros)) {
+    positive = o.pros.map((x) => String(x).trim()).filter(Boolean)
+  }
+  if (negative.length === 0 && Array.isArray(o.cons)) {
+    negative = o.cons.map((x) => String(x).trim()).filter(Boolean)
+  }
+
+  if (Array.isArray(o.insights) && positive.length === 0 && negative.length === 0) {
+    for (const item of o.insights) {
+      const s = String(item).trim()
+      if (!s) continue
+      if (s.startsWith('−') || s.startsWith('-')) {
+        negative.push(s.replace(/^[\u2212\-]\s*/, ''))
+      } else if (s.startsWith('+')) {
+        positive.push(s.replace(/^\+\s*/, ''))
+      } else {
+        positive.push(s)
+      }
+    }
+  }
+
+  if (anomalies.length === 0) {
+    anomalies = [
+      ...normalizeStringList(o.risks),
+      ...normalizeStringList(o.negativeAspects),
+    ]
+  }
+
+  return { positive, negative, anomalies }
+}
+
+/**
+ * @param {unknown} obj
+ * @returns {AnalysisPayload}
+ */
+export function normalizeAnalysisPayload(obj) {
+  if (!obj || typeof obj !== 'object') {
+    return {
+      summary: '',
+      risk_level: 'medium',
+      positive: [],
+      negative: [],
+      anomalies: [],
+      chartData: [],
+    }
+  }
+  const o = /** @type {Record<string, unknown>} */ (obj)
+
+  const { positive, negative, anomalies } = migrateLegacyLists(o)
+
+  let summary = typeof o.summary === 'string' ? o.summary.trim() : ''
+  if (summary.length > 200) {
+    summary = `${summary.slice(0, 197)}…`
+  }
+
+  const risk_level = normalizeRiskLevel(o.risk_level ?? o.status)
+
+  return {
+    summary,
+    risk_level,
+    positive,
+    negative,
+    anomalies,
+    chartData: normalizeChartData(o.chartData),
+  }
+}
+
+/**
+ * Parse JSON from model output (handles markdown code fences and trailing text).
  * @param {string} content
  * @returns {unknown | null}
  */
 function extractJsonFromContent(content) {
   const trimmed = content.trim()
+  const braceMatch = trimmed.match(/\{[\s\S]*\}/)
+  if (braceMatch) {
+    const rawJson = braceMatch[0]
+    try {
+      return JSON.parse(rawJson)
+    } catch {
+      /* continue */
+    }
+  }
   try {
     return JSON.parse(trimmed)
   } catch {
@@ -48,30 +220,6 @@ function extractJsonFromContent(content) {
 }
 
 /**
- * @param {unknown} obj
- * @returns {AnalysisPayload}
- */
-export function normalizeAnalysisPayload(obj) {
-  if (!obj || typeof obj !== 'object') {
-    return {
-      summary: '',
-      pros: [],
-      cons: [],
-      risks: '',
-    }
-  }
-  const o = /** @type {Record<string, unknown>} */ (obj)
-  const pros = Array.isArray(o.pros) ? o.pros.map((x) => String(x)) : []
-  const cons = Array.isArray(o.cons) ? o.cons.map((x) => String(x)) : []
-  return {
-    summary: typeof o.summary === 'string' && o.summary.trim() ? o.summary.trim() : '',
-    pros,
-    cons,
-    risks: typeof o.risks === 'string' ? o.risks : '',
-  }
-}
-
-/**
  * Safe parse for DB `result` column: JSON string, legacy plain text, or empty.
  * @param {string | null | undefined} raw
  * @returns {AnalysisPayload | null} null = nothing to show
@@ -83,11 +231,14 @@ export function parseStoredAnalysisResult(raw) {
     const parsed = JSON.parse(str)
     return normalizeAnalysisPayload(parsed)
   } catch {
+    const body = str.length > 1800 ? `${str.slice(0, 1797)}…` : str
     return {
       summary: str.length > 72 ? `${str.slice(0, 69)}…` : str || '',
-      pros: [],
-      cons: [],
-      risks: str,
+      risk_level: 'medium',
+      positive: [],
+      negative: [body],
+      anomalies: [],
+      chartData: [],
     }
   }
 }
@@ -167,12 +318,22 @@ async function groqChatJson(systemPrompt, userContent) {
       return { ok: false, error: 'Empty response from the model' }
     }
 
-    const extracted = extractJsonFromContent(content)
+    let extracted
+    try {
+      extracted = extractJsonFromContent(content)
+    } catch {
+      return { ok: false, error: 'Model returned invalid JSON. Try again.' }
+    }
     if (!extracted) {
       return { ok: false, error: 'Model did not return valid JSON. Try again.' }
     }
 
-    const dataPayload = normalizeAnalysisPayload(extracted)
+    let dataPayload
+    try {
+      dataPayload = normalizeAnalysisPayload(extracted)
+    } catch {
+      return { ok: false, error: 'Could not read analysis structure. Try again.' }
+    }
     return { ok: true, data: dataPayload }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
@@ -185,12 +346,12 @@ async function groqChatJson(systemPrompt, userContent) {
  * @returns {Promise<{ ok: true, data: AnalysisPayload } | { ok: false, error: string }>}
  */
 export async function analyzeContract(text) {
-  const userContent = `Analyze the following contract or legal document text and return only valid JSON matching the schema above:\n\n${text}`
+  const userContent = `Analyze the following document. Output ONLY the JSON object with "summary", "risk_level", "positive", "negative", "anomalies", and "chartData" as specified. Use "chartData": [] unless the document actually discusses money or numeric financial flows as defined in the rules.\n\n${text}`
   return groqChatJson(SYSTEM_PROMPT, userContent)
 }
 
 /**
- * Translate analysis fields to a target display language. Keys stay English; values only.
+ * Translate analysis strings to a target display language. Keys stay English; values only.
  * @param {AnalysisPayload} payload
  * @param {typeof ANALYSIS_TRANSLATION_LOCALES[number]} targetLocale
  * @returns {Promise<{ ok: true, data: AnalysisPayload } | { ok: false, error: string }>}
@@ -201,9 +362,9 @@ export async function translateAnalysis(payload, targetLocale) {
     return { ok: false, error: 'Unsupported translation locale' }
   }
 
-  const systemPrompt = `You are a professional legal translator. Translate every string value in the user's JSON into ${language}. Preserve legal meaning and nuance. Output ONLY one JSON object with exactly these keys (English key names, do not rename): "summary" (string), "pros" (array of strings), "cons" (array of strings), "risks" (string). The "pros" array must have the same number of items as in the input; the "cons" array must have the same number of items as in the input. Translate the text inside each string; do not omit items. No markdown, no code fences, no extra text.`
+  const systemPrompt = `You are a professional legal translator. Translate string values into ${language}. Output ONLY one JSON object with keys: "summary" (string), "risk_level" ("low"|"medium"|"high" — keep the SAME value as input), "positive" (array of strings, same length and order), "negative" (array of strings, same length and order), "anomalies" (array of strings, same length and order), "chartData" (array of objects with "name", "balance" optional, "income", "expenses" — or empty array if input chartData is empty). Translate summary, each positive, negative, and anomalies string, and each chartData "name". Keep risk_level unchanged. Keep numeric fields identical. Same array lengths and order; if input chartData is [], output []. No markdown, no extra text.`
 
-  const userContent = `Translate all human-readable string values into ${language}. Keep the same JSON structure and array lengths:\n\n${JSON.stringify(payload)}`
+  const userContent = `Translate into ${language}:\n\n${JSON.stringify(payload)}`
 
   return groqChatJson(systemPrompt, userContent)
 }
