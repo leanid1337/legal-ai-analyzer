@@ -1,4 +1,5 @@
 ﻿import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { AnimatePresence, motion as Motion } from 'framer-motion';
 import {
   Scale,
@@ -19,6 +20,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { supabaseClient } from '../lib/supabase';
+import { logUserEvent } from '@/lib/userEvents';
 import {
   analyzeContract,
   normalizeAnalysisPayload,
@@ -512,9 +514,11 @@ export default function Dashboard({ session }) {
 
     setAnalyzeError(null);
     setIsAnalyzing(true);
+    void logUserEvent('analysis_start', 'started', { doc_chars: trimmed.length });
     try {
       const aiResult = await analyzeContract(trimmed);
       if (!aiResult.ok) {
+        void logUserEvent('analysis_error', 'error', { stage: 'ai', message: aiResult.error });
         setAnalyzeError(aiResult.error);
         window.alert(aiResult.error);
         return;
@@ -527,6 +531,7 @@ export default function Dashboard({ session }) {
         resultJson = JSON.stringify(normalized);
         JSON.parse(resultJson);
       } catch {
+        void logUserEvent('analysis_error', 'error', { stage: 'parse' });
         setAnalyzeError(t('analysis.parseError'));
         window.alert(t('analysis.parseError'));
         return;
@@ -545,16 +550,20 @@ export default function Dashboard({ session }) {
 
       if (error) {
         const msg = `${t('saveFailed')} ${error.message}`;
+        void logUserEvent('analysis_error', 'error', { stage: 'save', message: error.message });
         setAnalyzeError(msg);
         window.alert(msg);
         return;
       }
 
+      void logUserEvent('analysis_success', 'success', { analyzed_doc_id: inserted?.id ?? null });
       setAnalysisData(normalized);
       setActiveRecordId(inserted?.id ?? null);
       setDocText('');
       await fetchHistory();
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      void logUserEvent('analysis_error', 'error', { stage: 'unknown', message: msg });
       setAnalyzeError(t('analysis.parseError'));
       window.alert(t('analysis.parseError'));
     } finally {
@@ -788,9 +797,17 @@ export default function Dashboard({ session }) {
         </AnimatePresence>
 
         <header className="relative z-10 border-b border-slate-200/80 bg-white px-4 py-4 sm:px-8 sm:py-5">
-          <div className="mx-auto max-w-[min(100%,1280px)]">
-            <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">{t('doc.title')}</h1>
-            <p className="mt-1 text-sm text-slate-500">{t('doc.subtitle')}</p>
+          <div className="mx-auto flex max-w-[min(100%,1280px)] flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <h1 className="text-xl font-bold tracking-tight text-slate-900 sm:text-2xl">{t('doc.title')}</h1>
+              <p className="mt-1 text-sm text-slate-500">{t('doc.subtitle')}</p>
+            </div>
+            <Link
+              to="/pricing"
+              className="shrink-0 self-start rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-900"
+            >
+              {t('nav.pricing')}
+            </Link>
           </div>
         </header>
 

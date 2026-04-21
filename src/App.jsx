@@ -1,8 +1,10 @@
 ﻿import React, { useState, useEffect } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import { supabaseClient, supabaseConfigured, supabaseInitError } from './lib/supabase';
+import { logUserEvent } from './lib/userEvents';
 import Dashboard from './components/Dashboard';
 import LoginPanel from './components/LoginPanel';
+import PaywallPage from './components/PaywallPage';
 import LanguageSwitcher from './components/LanguageSwitcher';
 import LoginDotsBackground from './components/LoginDotsBackground';
 import SharedResult from './components/SharedResult';
@@ -67,6 +69,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/share/:id" element={<SharedResult />} />
+      <Route path="/pricing" element={<PaywallPage />} />
       <Route path="*" element={<MainApp />} />
     </Routes>
   );
@@ -82,6 +85,9 @@ function MainApp() {
     const {
       data: { subscription },
     } = supabaseClient.auth.onAuthStateChange((event, s) => {
+      if (event === 'SIGNED_IN' && s?.user) {
+        void logUserEvent('login', 'success', { auth_event: event });
+      }
       if (event === 'PASSWORD_RECOVERY') {
         setLinkRecovery(true);
         setSession(s);
